@@ -133,45 +133,23 @@ function add_vendor {
         exit 1
     fi
     vendor_id_decimal=$(printf "%d" 0x$vendor_id)
-    previous_vendor_id_line=""
-    previous_pot_vendor_id=""
-    for pot_previous_vendor_id in $(grep -oP "^[0-9a-f]{4}" /tmp/usb.ids.new); do
-        pot_previous_vendor_id_decimal=$(printf "%d" 0x$pot_previous_vendor_id)
-        if [ $pot_previous_vendor_id_decimal -eq $vendor_id_decimal ]; then
+    next_vendor_id_line=""
+    for pot_next_vendor_id in $(grep -oP "^[0-9a-f]{4}" /tmp/usb.ids.new); do
+        pot_next_vendor_id_decimal=$(printf "%d" 0x$pot_next_vendor_id)
+        if [ $pot_next_vendor_id_decimal -eq $vendor_id_decimal ]; then
             echo "Error: Vendor already exists" >&2
             exit 1
         fi
-        if [ $pot_previous_vendor_id_decimal -gt $vendor_id_decimal ]; then
-            previous_vendor_id_line=$(grep -n "^$previous_pot_vendor_id" /tmp/usb.ids.new | head -n 1 | cut -d ':' -f 1)
+        if [ $pot_next_vendor_id_decimal -gt $vendor_id_decimal ]; then
+            next_vendor_id_line=$(grep -n "^$pot_next_vendor_id" /tmp/usb.ids.new | head -n 1 | cut -d ':' -f 1)
             break
         fi
-        previous_pot_vendor_id=$pot_previous_vendor_id
     done
-    # Go line by line and insert the new vendor where it belongs
-    for line_number in $(seq $previous_vendor_id_line $(wc -l /tmp/usb.ids.new | cut -d ' ' -f 1)); do
-        line=$(sed -n "${line_number}p" /tmp/usb.ids.new)
-        # New vendor ID
-        if echo -E "$line" | grep -q "^[0-9a-f]\{4\}"; then
-            # Get vendor ID of current line
-            current_vendor_id=$(echo -E "$line" | grep -oP "^[0-9a-f]{4}" | head -n 1)
-            current_vendor_id_decimal=$(printf "%d" 0x$current_vendor_id)
-            # If the vendor IDs match, the vendor already exists and we should throw an error
-            if [ $current_vendor_id_decimal -eq $vendor_id_decimal ]; then
-                echo "Error: Vendor already exists" >&2
-                exit 1
-            fi
-            # If the vendor ID is greater than our vendor ID, insert the new vendor before it
-            if [ $current_vendor_id_decimal -gt $vendor_id_decimal ]; then
-                sed -i "${line_number}i\\$vendor_id  $vendor_name" /tmp/usb.ids.new
-                break
-            fi
-            # If we reach the end of the file, insert the new vendor before it
-            if [ $line_number -eq $(wc -l /tmp/usb.ids.new | cut -d ' ' -f 1) ]; then
-                sed -i "${line_number}i\\"$'\t'"$vendor_id  $vendor_name" /tmp/usb.ids.new
-                break
-            fi
-        fi
-    done
+    if [ -z "$next_vendor_id_line" ]; then
+        next_vendor_id_line=$(wc -l /tmp/usb.ids.new | cut -d ' ' -f 1)
+    fi
+    # Insert the new vendor where it belongs (line before the next vendor ID)
+    sed -i "${next_vendor_id_line}i\\$vendor_id  $vendor_name" /tmp/usb.ids.new
 }
 
 function remove_vendor {
