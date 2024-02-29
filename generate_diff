@@ -228,7 +228,6 @@ function copy_vendor_data {
     # Go line by line and copy the devices from the old vendor to the new vendor, until we reach the next vendor
     for line_number in $(seq $(($vendor_line_old + 1)) $(wc -l /tmp/usb.ids.new | cut -d ' ' -f 1)); do
         line=$(sed -n "${line_number}p" /tmp/usb.ids.new)
-        echo -E "DEUBG: $line"
         # New vendor ID
         if echo -E "$line" | grep -q "^[0-9a-f]\{4\}"; then
             break
@@ -238,6 +237,34 @@ function copy_vendor_data {
         device_name=$(echo -E "$line" | grep -oP "(?<=[0-9a-f]{4}\s{2}).*" | head -n 1)
         add_device $vendor_id_new $product_id "$device_name"
     done
+}
+
+function update_vendor_name {
+    vendor_id=$1
+    vendor_name=$2
+    # Validate correct number of arguments
+    if [ -z "$vendor_id" ] || [ -z "$vendor_name" ]; then
+        echo "Error: Missing arguments" >&2
+        exit 1
+    fi
+    if [ $# -ne 2 ]; then
+        echo "Error: Incorrect number of arguments" >&2
+        exit 1
+    fi
+    # Ensure the ID is a 4 digit hex number
+    if ! echo $vendor_id | grep -q "^[0-9a-f]\{4\}$"; then
+        echo "Error: Invalid vendor ID" >&2
+        exit 1
+    fi
+    vendor_id_decimal=$(printf "%d" 0x$vendor_id)
+    # Use regex to find the correct vendor ID
+    vendor_line=$(grep -n "^$vendor_id" /tmp/usb.ids.new | head -n 1 | cut -d ':' -f 1)
+    if [ -z "$vendor_line" ]; then
+        echo "Error: Vendor ID not found" >&2
+        exit 1
+    fi
+    # Update the vendor name
+    sed -i "${vendor_line}s/.*$/$vendor_id  $vendor_name/" /tmp/usb.ids.new
 }
 
 # Download usb.ids
@@ -319,11 +346,7 @@ while true; do
         update_vendor_name)
             vendor_id=$1
             vendor_name=$2
-            add_vendor "ffff" "TEMP"
-            copy_vendor_data $vendor_id "ffff"
-            remove_vendor $vendor_id
-            add_vendor $vendor_id "$vendor_name"
-            copy_vendor_data "ffff" $vendor_id
+            update_vendor_name $vendor_id "$vendor_name"
             ;;
         update_vendor_id)
             old_vendor_id=$1
