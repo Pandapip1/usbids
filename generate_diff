@@ -1,0 +1,358 @@
+#!/bin/sh
+
+# REPL:
+# add_device <vendor_id> <product_id> <device-name>
+# remove_device <vendor_id> <product_id>
+# update_device_name <vendor_id> <product_id> <device-name>
+# update-device_vendor <vendor_id> <product_id> <vendor_id>
+# update_device_id <vendor_id> <product_id> <new-vendor_id> <new-product_id>
+# add_vendor <vendor_id> <vendor-name>
+# remove_vendor <vendor_id>
+# update_vendor_name <vendor_id> <vendor-name>
+# update_vendor_id <vendor_id> <new-vendor_id>
+
+function add_device {
+    vendor_id=$1
+    product_id=$2
+    device_name=$3
+    # Validate correct number of arguments
+    if [ -z "$vendor_id" ] || [ -z "$product_id" ] || [ -z "$device_name" ]; then
+        echo "Error: Missing arguments" >&2
+        exit 1
+    fi
+    if [ $# -ne 3 ]; then
+        echo "Error: Incorrect number of arguments" >&2
+        exit 1
+    fi
+    # Ensure both IDs are 4 digit hex numbers
+    if ! echo $vendor_id | grep -q "^[0-9a-f]\{4\}$"; then
+        echo "Error: Invalid vendor ID" >&2
+        exit 1
+    fi
+    if ! echo $product_id | grep -q "^[0-9a-f]\{4\}$"; then
+        echo "Error: Invalid product ID" >&2
+        exit 1
+    fi
+    product_id_decimal=$(printf "%d" 0x$product_id)
+    # Use regex to find the correct vendor ID
+    vendor_line=$(grep -n "^$vendor_id" /tmp/usb.ids.new | head -n 1 | cut -d ':' -f 1)
+    if [ -z "$vendor_line" ]; then
+        echo "Error: Vendor ID not found" >&2
+        exit 1
+    fi
+    # Go line by line starting at the vendor ID line and insert the new device where it belongs
+    for line_number in $(seq $(($vendor_line + 1)) $(wc -l /tmp/usb.ids.new | cut -d ' ' -f 1)); do
+        line=$(sed -n "${line_number}p" /tmp/usb.ids.new)
+        # New vendor ID
+        if echo -E "$line" | grep -q "^[0-9a-f]\{4\}"; then
+            sed -i "${line_number}i\\"$'\t'"$product_id  $device_name" /tmp/usb.ids.new
+            break
+        fi
+        # Get product ID of current line
+        current_product_id=$(echo -E "$line" | grep -oP "[0-9a-f]{4}" | head -n 1)
+        current_product_id_decimal=$(printf "%d" 0x$current_product_id)
+        # If the product ID is greater than our product ID, insert the new device before it
+        if [ $current_product_id_decimal -gt $product_id_decimal ]; then
+            sed -i "${line_number}i\\"$'\t'"$product_id  $device_name" /tmp/usb.ids.new
+            break
+        fi
+        # If we reach the end of the file, insert the new device before it
+        if [ $line_number -eq $(wc -l /tmp/usb.ids.new | cut -d ' ' -f 1) ]; then
+            sed -i "${line_number}i\\"$'\t'"$product_id  $device_name" /tmp/usb.ids.new
+            break
+        fi
+    done
+}
+
+remove_device() {
+    vendor_id=$1
+    product_id=$2
+    # Validate correct number of arguments
+    if [ -z "$vendor_id" ] || [ -z "$product_id" ]; then
+        echo "Error: Missing arguments" >&2
+        exit 1
+    fi
+    if [ $# -ne 2 ]; then
+        echo "Error: Incorrect number of arguments" >&2
+        exit 1
+    fi
+    # Ensure both IDs are 4 digit hex numbers
+    if ! echo $vendor_id | grep -q "^[0-9a-f]\{4\}$"; then
+        echo "Error: Invalid vendor ID" >&2
+        exit 1
+    fi
+    if ! echo $product_id | grep -q "^[0-9a-f]\{4\}$"; then
+        echo "Error: Invalid product ID" >&2
+        exit 1
+    fi
+    product_id_decimal=$(printf "%d" 0x$product_id)
+    # Use regex to find the correct vendor ID
+    vendor_line=$(grep -n "^$vendor_id" /tmp/usb.ids.new | head -n 1 | cut -d ':' -f 1)
+    if [ -z "$vendor_line" ]; then
+        echo "Error: Vendor ID not found" >&2
+        exit 1
+    fi
+    # Go line by line starting at the vendor ID line and remove the device if it exists
+    for line_number in $(seq $(($vendor_line + 1)) $(wc -l /tmp/usb.ids.new | cut -d ' ' -f 1)); do
+        line=$(sed -n "${line_number}p" /tmp/usb.ids.new)
+        # New vendor ID
+        if echo -E "$line" | grep -q "^[0-9a-f]\{4\}"; then
+            break
+        fi
+        # Get product ID of current line
+        current_product_id=$(echo -E "$line" | grep -oP "[0-9a-f]{4}" | head -n 1)
+        current_product_id_decimal=$(printf "%d" 0x$current_product_id)
+        # If the product ID matches our product ID, remove the device
+        if [ $current_product_id_decimal -eq $product_id_decimal ]; then
+            sed -i "${line_number}d" /tmp/usb.ids.new
+            break
+        fi
+        # If we reach the end of the file the device does not exist
+        if [ $line_number -eq $(wc -l /tmp/usb.ids.new | cut -d ' ' -f 1) ]; then
+            echo "Error: Device not found" >&2
+            exit 1
+        fi
+    done
+}
+
+function add_vendor {
+    vendor_id=$1
+    vendor_name=$2
+    # Validate correct number of arguments
+    if [ -z "$vendor_id" ] || [ -z "$vendor_name" ]; then
+        echo "Error: Missing arguments" >&2
+        exit 1
+    fi
+    if [ $# -ne 2 ]; then
+        echo "Error: Incorrect number of arguments" >&2
+        exit 1
+    fi
+    # Ensure the ID is a 4 digit hex number
+    if ! echo $vendor_id | grep -q "^[0-9a-f]\{4\}$"; then
+        echo "Error: Invalid vendor ID" >&2
+        exit 1
+    fi
+    vendor_id_decimal=$(printf "%d" 0x$vendor_id)
+    previous_vendor_id_line=""
+    previous_pot_vendor_id=""
+    for pot_previous_vendor_id in $(grep -oP "^[0-9a-f]{4}" /tmp/usb.ids.new); do
+        pot_previous_vendor_id_decimal=$(printf "%d" 0x$pot_previous_vendor_id)
+        if [ $pot_previous_vendor_id_decimal -eq $vendor_id_decimal ]; then
+            echo "Error: Vendor already exists" >&2
+            exit 1
+        fi
+        if [ $pot_previous_vendor_id_decimal -gt $vendor_id_decimal ]; then
+            previous_vendor_id_line=$(grep -n "^$previous_pot_vendor_id" /tmp/usb.ids.new | head -n 1 | cut -d ':' -f 1)
+            break
+        fi
+        previous_pot_vendor_id=$pot_previous_vendor_id
+    done
+    # Go line by line and insert the new vendor where it belongs
+    for line_number in $(seq $previous_vendor_id_line $(wc -l /tmp/usb.ids.new | cut -d ' ' -f 1)); do
+        line=$(sed -n "${line_number}p" /tmp/usb.ids.new)
+        # New vendor ID
+        if echo -E "$line" | grep -q "^[0-9a-f]\{4\}"; then
+            # Get vendor ID of current line
+            current_vendor_id=$(echo -E "$line" | grep -oP "^[0-9a-f]{4}" | head -n 1)
+            current_vendor_id_decimal=$(printf "%d" 0x$current_vendor_id)
+            # If the vendor IDs match, the vendor already exists and we should throw an error
+            if [ $current_vendor_id_decimal -eq $vendor_id_decimal ]; then
+                echo "Error: Vendor already exists" >&2
+                exit 1
+            fi
+            # If the vendor ID is greater than our vendor ID, insert the new vendor before it
+            if [ $current_vendor_id_decimal -gt $vendor_id_decimal ]; then
+                sed -i "${line_number}i\\$vendor_id  $vendor_name" /tmp/usb.ids.new
+                break
+            fi
+            # If we reach the end of the file, insert the new vendor before it
+            if [ $line_number -eq $(wc -l /tmp/usb.ids.new | cut -d ' ' -f 1) ]; then
+                sed -i "${line_number}i\\"$'\t'"$vendor_id  $vendor_name" /tmp/usb.ids.new
+                break
+            fi
+        fi
+    done
+}
+
+function remove_vendor {
+    vendor_id=$1
+    # Validate correct number of arguments
+    if [ -z "$vendor_id" ]; then
+        echo "Error: Missing arguments" >&2
+        exit 1
+    fi
+    if [ $# -ne 1 ]; then
+        echo "Error: Incorrect number of arguments" >&2
+        exit 1
+    fi
+    # Ensure the ID is a 4 digit hex number
+    if ! echo $vendor_id | grep -q "^[0-9a-f]\{4\}$"; then
+        echo "Error: Invalid vendor ID" >&2
+        exit 1
+    fi
+    vendor_id_decimal=$(printf "%d" 0x$vendor_id)
+    # Get line number of vendor ID
+    vendor_line=$(grep -n "^$vendor_id" /tmp/usb.ids.new | head -n 1 | cut -d ':' -f 1)
+    if [ -z "$vendor_line" ]; then
+        echo "Error: Vendor ID not found" >&2
+        exit 1
+    fi
+    # Go line by line and delete the vendor and all its devices
+    sed -i "${vendor_line}d" /tmp/usb.ids.new
+    for line_number in $(seq $(($vendor_line + 1)) $(wc -l /tmp/usb.ids.new | cut -d ' ' -f 1)); do
+        line=$(sed -n "${vendor_line}p" /tmp/usb.ids.new) # Since we're deleting lines, the line number will always be the same
+        # New vendor ID
+        if echo -E "$line" | grep -q "^[0-9a-f]\{4\}"; then
+            break
+        fi
+        # Delete the device
+        sed -i "${vendor_line}d" /tmp/usb.ids.new
+    done
+}
+
+function copy_vendor_data {
+    vendor_id_old=$1
+    vendor_id_new=$2
+    # Validate correct number of arguments
+    if [ -z "$vendor_id_old" ] || [ -z "$vendor_id_new" ]; then
+        echo "Error: Missing arguments" >&2
+        exit 1
+    fi
+    if [ $# -ne 2 ]; then
+        echo "Error: Incorrect number of arguments" >&2
+        exit 1
+    fi
+    # Ensure the IDs are 4 digit hex numbers
+    if ! echo $vendor_id_old | grep -q "^[0-9a-f]\{4\}$"; then
+        echo "Error: Invalid old vendor ID" >&2
+        exit 1
+    fi
+    if ! echo $vendor_id_new | grep -q "^[0-9a-f]\{4\}$"; then
+        echo "Error: Invalid new vendor ID" >&2
+        exit 1
+    fi
+    # Use regex to find the correct vendor ID
+    vendor_line_old=$(grep -n "^$vendor_id_old" /tmp/usb.ids.new | head -n 1 | cut -d ':' -f 1)
+    if [ -z "$vendor_line_old" ]; then
+        echo "Error: Old vendor ID not found" >&2
+        exit 1
+    fi
+    vendor_line_new=$(grep -n "^$vendor_id_new" /tmp/usb.ids.new | head -n 1 | cut -d ':' -f 1)
+    if [ -z "$vendor_line_new" ]; then
+        echo "Error: New vendor ID not found" >&2
+        exit 1
+    fi
+    # Go line by line and copy the devices from the old vendor to the new vendor, until we reach the next vendor
+    for line_number in $(seq $(($vendor_line_old + 1)) $(wc -l /tmp/usb.ids.new | cut -d ' ' -f 1)); do
+        line=$(sed -n "${line_number}p" /tmp/usb.ids.new)
+        echo -E "DEUBG: $line"
+        # New vendor ID
+        if echo -E "$line" | grep -q "^[0-9a-f]\{4\}"; then
+            break
+        fi
+        # Add product to new vendor (we can't calculate the line number since the new one might already exist)
+        product_id=$(echo -E "$line" | grep -oP "[0-9a-f]{4}" | head -n 1)
+        device_name=$(echo -E "$line" | grep -oP "(?<=[0-9a-f]{4}\s{2}).*" | head -n 1)
+        add_device $vendor_id_new $product_id "$device_name"
+    done
+}
+
+# Download usb.ids
+curl --insecure -o /tmp/usb.ids https://usb-ids.gowdy.us/usb.ids 2>/dev/null
+if [ $? -ne 0 ]; then
+    if [ ! -f /tmp/usb.ids ]; then
+        echo "Error: usb.ids failed to download" >&2
+        exit 2
+    else
+        echo "Warning: usb.ids failed to download; using local copy" >&2
+    fi
+fi
+cp /tmp/usb.ids /tmp/usb.ids.new
+
+# Main loop
+while true; do
+    read -p "" command
+    # If EOF is reached, generate the diff and exit (end condition for REPL)
+    if [ $? -eq 1 ]; then
+        echo -E "--- usb.ids"
+        echo -E "+++ usb.ids"
+        diff -u /tmp/usb.ids /tmp/usb.ids.new | tail -n +3
+        rm /tmp/usb.ids.new
+        exit 0
+    fi
+    # No command provided
+    if [ -z "$command" ]; then
+        continue
+    fi
+    # Comments start with #
+    if echo $command | grep -q "^#"; then
+        continue
+    fi
+    # Parse command
+    eval set -- $(echo $command | cut -d ' ' -f 2-)
+    case $(echo $command | cut -d ' ' -f 1) in
+        add_device)
+            vendor_id=$1
+            product_id=$2
+            device_name=$3
+            add_device $vendor_id $product_id "$device_name"
+            ;;
+        remove_device)
+            vendor_id=$1
+            product_id=$2
+            remove_device $vendor_id $product_id
+            ;;
+        update_device-name)
+            vendor_id=$1
+            product_id=$2
+            device_name=$3
+            remove_device $vendor_id $product_id
+            add_device $vendor_id $product_id "$device_name"
+            ;;
+        update_device_vendor)
+            vendor_id=$1
+            product_id=$2
+            new_vendor_id=$3
+            remove_device $vendor_id $product_id
+            add_device $new_vendor_id $product_id "$device_name"
+            ;;
+        update_device_id)
+            vendor_id=$1
+            product_id=$2
+            new_vendor_id=$3
+            new_product_id=$4
+            remove_device $vendor_id $product_id
+            add_device $new_vendor_id $new_product_id "$device_name"
+            ;;
+        add_vendor)
+            vendor_id=$1
+            vendor_name=$2
+            add_vendor $vendor_id "$vendor_name"
+            ;;
+        remove_vendor)
+            vendor_id=$1
+            remove_vendor $vendor_id
+            ;;
+        update_vendor_name)
+            vendor_id=$1
+            vendor_name=$2
+            add_vendor "ffff" "TEMP"
+            copy_vendor_data $vendor_id "ffff"
+            remove_vendor $vendor_id
+            add_vendor $vendor_id "$vendor_name"
+            copy_vendor_data "ffff" $vendor_id
+            ;;
+        update_vendor_id)
+            old_vendor_id=$1
+            new_vendor_id=$2
+            old_vendor_name=$(grep -oP "^$old_vendor_id\s{2}.*" /tmp/usb.ids.new | head -n 1 | cut -d ' ' -f 2-)
+            add_vendor $new_vendor_id "$old_vendor_name"
+            copy_vendor_data $old_vendor_id $new_vendor_id
+            remove_vendor $old_vendor_id
+            ;;
+        *)
+            echo "Error: Invalid action" >&2
+            exit 1
+            ;;
+    esac
+done
