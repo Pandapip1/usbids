@@ -133,21 +133,26 @@ function add_vendor {
         exit 1
     fi
     vendor_id_decimal=$(printf "%d" 0x$vendor_id)
-    next_vendor_id_line=""
-    for pot_next_vendor_id in $(grep -oP "^[0-9a-f]{4}" /tmp/usb.ids.new); do
+    # Binary search
+    all_vendor_ids=$(grep -oP "^[0-9a-f]{4}" /tmp/usb.ids.new)
+    start_idx=1
+    end_idx=$(echo -E "$all_vendor_ids" | wc -l)
+    while [ $start_idx -le $end_idx ]; do
+        midpoint=$((($start_idx + $end_idx) / 2))
+        pot_next_vendor_id=$(echo -E "$all_vendor_ids" | sed -n "${midpoint}p")
         pot_next_vendor_id_decimal=$(printf "%d" 0x$pot_next_vendor_id)
         if [ $pot_next_vendor_id_decimal -eq $vendor_id_decimal ]; then
             echo "Error: Vendor already exists" >&2
             exit 1
         fi
         if [ $pot_next_vendor_id_decimal -gt $vendor_id_decimal ]; then
-            next_vendor_id_line=$(grep -n "^$pot_next_vendor_id" /tmp/usb.ids.new | head -n 1 | cut -d ':' -f 1)
-            break
+            end_idx=$(($midpoint - 1))
+        else
+            start_idx=$(($midpoint + 1))
         fi
     done
-    if [ -z "$next_vendor_id_line" ]; then
-        next_vendor_id_line=$(wc -l /tmp/usb.ids.new | cut -d ' ' -f 1)
-    fi
+    next_vendor_id=$(echo -E "$all_vendor_ids" | sed -n "${start_idx}p")
+    next_vendor_id_line=$(grep -n "^$next_vendor_id" /tmp/usb.ids.new | head -n 1 | cut -d ':' -f 1)
     # Insert the new vendor where it belongs (line before the next vendor ID)
     sed -i "${next_vendor_id_line}i\\$vendor_id  $vendor_name" /tmp/usb.ids.new
 }
